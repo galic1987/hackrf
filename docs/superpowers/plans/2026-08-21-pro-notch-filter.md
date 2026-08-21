@@ -477,6 +477,76 @@ git commit -m "fpga: wire programmable notch into standard RX chain (regs 0x07-0
 
 ---
 
+### Task 3b: Wire the notch into the extended-precision RX gateware
+
+**Files:**
+- Modify: `firmware/fpga/top/ext_precision_rx.py`
+
+**Interfaces:**
+- Consumes: `Notch` from Task 2. The ext RX chain (top/ext_precision_rx.py:73): `dc_block` → `mixer` (NCO fine-shift) → `cic` → `cic_comp` → `hbfir1/2` → `clkconv`. SPI regs used: 0x01 (ctrl), 0x02 (decim SFR), 0x03 (rx_nco). 0x07-0x0A are free.
+- Produces: ext_precision_rx image with identical notch register map (0x07 enable, 0x08-0x0A pstep) so the Task 4 firmware setters work unchanged on both images. Note: the notch sits after the ext image's fine-shift mixer, so the programmed offset is relative to the *post-mixer* baseband (with rx_nco=0, identical to LO-relative).
+
+- [ ] **Step 1: Modify `top/ext_precision_rx.py`**
+
+Add the import:
+
+```python
+from dsp.notch              import Notch
+```
+
+In `rx_chain`, insert after `"mixer"`:
+
+```python
+            "notch":        DomainRenamer(adc_clk)(Notch(width=8, ratio=14, domain=adc_clk)),
+```
+
+After the `rx_nco` register line (0x03), add (same addresses as the standard image):
+
+```python
+        rx_notch_ctrl  = spi_regs.add_register(0x07, init=0, size=1)
+        rx_notch_pstep_l = spi_regs.add_register(0x08, init=0)
+        rx_notch_pstep_m = spi_regs.add_register(0x09, init=0)
+        rx_notch_pstep_h = spi_regs.add_register(0x0a, init=0)
+```
+
+After the NCO-control CDC block, add:
+
+```python
+        # RX notch filter control (sync -> adc_clk domain).
+        notch_pstep_sync = Signal(24)
+        m.d.comb += notch_pstep_sync.eq(Cat(rx_notch_pstep_l, rx_notch_pstep_m, rx_notch_pstep_h))
+        notch_en_adclk = Signal()
+        notch_pstep_adclk = Signal(signed(24))
+        m.submodules.notch_en_cdc = cdc.FFSynchronizer(rx_notch_ctrl, notch_en_adclk, o_domain=adc_clk)
+        m.submodules.notch_pstep_cdc = cdc.FFSynchronizer(notch_pstep_sync, notch_pstep_adclk, o_domain=adc_clk)
+        m.d.comb += [
+            rx_chain["notch"].enable .eq(notch_en_adclk),
+            rx_chain["notch"].pstep  .eq(notch_pstep_adclk),
+        ]
+```
+
+(`Cat`, `signed`, `cdc` are already used in this file — verify imports.)
+
+- [ ] **Step 2: Rebuild gateware and re-check resources**
+
+```bash
+cd "/Volumes/Radiator 8TB/mac-archive/hackrf/firmware/fpga"
+export PATH="/Volumes/Radiator 8TB/mac-archive/hackrf/tools/oss-cad-suite/bin:$PATH"
+../../tools/venv-fpga/bin/python build.py 2>&1 | tee /tmp/gw_build_notch_ext.log
+```
+
+Expected: all 4 images build. The ext_precision_rx image is the fattest — watch its utilisation in `/tmp/gw_build_notch_ext.log`. Same stop rule as Task 3: on placement failure, STOP and report numbers.
+
+- [ ] **Step 3: Commit**
+
+```bash
+cd "/Volumes/Radiator 8TB/mac-archive/hackrf"
+git add firmware/fpga/top/ext_precision_rx.py
+git commit -m "fpga: wire programmable notch into ext_precision_rx (regs 0x07-0x0a)"
+```
+
+---
+
 ### Task 4: Firmware plumbing (radio register + FPGA register definitions)
 
 **Files:**
@@ -1027,6 +1097,107 @@ cd "/Volumes/Radiator 8TB/mac-archive/hackrf"
 git status --short   # confirm only intended files were touched
 git push galic1987 upstream-pr-submit
 ```
+
+---
+
+### Task 8: hackrf_gnss extended-precision (12-bit-in-16-bit) capture support
+
+**Files:**
+- Modify: `/Volumes/Radiator 8TB/gnss/hackrf_gnss/src/main.rs` (Args + capture loop + fix/analyze file readers)
+
+**Interfaces:**
+- Consumes: nothing from earlier tasks (independent host-side work).
+- Produces: `--ext16` flag on `hackrf_gnss`; when set, live capture and file analysis interpret samples as little-endian int16 I/Q (4 bytes per sample pair) instead of int8 (2 bytes). The user loads the ext gateware separately (`hackrf_debug -P 2`) and must use fs ≤ 2.5 Msps.
+
+**Context:** the ext_precision_rx gateware outputs 12-bit data (fixed.SQ(11)) right-justified in a 16-bit transport. Absolute scaling does not matter for acquisition (metrics are ratios), so no renormalization is needed — just parse the wider words.
+
+- [ ] **Step 1: Add the flag and plumb sample width**
+
+In `Args` (main.rs, after the `serial` option):
+
+```rust
+    /// Extended-precision capture: samples are little-endian int16 I/Q
+    /// (12-bit data from the ext_precision_rx gateware, load it first with
+    /// `hackrf_debug -P 2`). Requires --fs-hz <= 2.5 MHz.
+    #[arg(long, default_value_t = false)]
+    ext16: bool,
+```
+
+In `main()`, after parsing, guard:
+
+```rust
+    if args.ext16 && args.fs_hz > 2_500_000.0 {
+        anyhow::bail!("--ext16 requires --fs-hz <= 2.5 MHz (extended-precision gateware decimates >= 16x)");
+    }
+```
+
+- [ ] **Step 2: Fix the `fix`-mode file reader for both widths**
+
+In the `Mode::Fix` path (main.rs:~1207-1219), replace the fixed int8 reads with width-aware code:
+
+```rust
+    let bytes_per_sample: u64 = if args.ext16 { 4 } else { 2 };
+    // ...
+    if args.offset_secs > 0.0 {
+        use std::io::Seek;
+        let byte_off = (args.offset_secs * args.fs_hz).round() as u64 * bytes_per_sample;
+        file.seek(std::io::SeekFrom::Start(byte_off)).context("seek")?;
+    }
+    let mut raw = vec![0u8; ms_samples * nblocks * bytes_per_sample as usize];
+    file.read_exact(&mut raw)
+        .context("capture too short for the requested window")?;
+    let mut sig: Vec<Complex<f32>> = if args.ext16 {
+        raw.chunks_exact(4)
+            .map(|c| Complex::new(
+                i16::from_le_bytes([c[0], c[1]]) as f32,
+                i16::from_le_bytes([c[2], c[3]]) as f32))
+            .collect()
+    } else {
+        raw.chunks_exact(2)
+            .map(|c| Complex::new(c[0] as i8 as f32, c[1] as i8 as f32))
+            .collect()
+    };
+```
+
+Check `analyze_iq_file` and the live capture loop for the same int8 assumption and give them the same treatment where they read samples (keep the change minimal: only paths the user actually runs for GPS).
+
+- [ ] **Step 3: Build and smoke-test against the existing 8-bit path**
+
+```bash
+cd "/Volumes/Radiator 8TB/gnss/hackrf_gnss"
+cargo build --release
+./target/release/hackrf_gnss -m fix -f ../sim.iq --fs-hz 8000000 --if-hz 2420000 2>&1 | head -5
+```
+
+Expected: 8-bit regression check — still acquires the 6 sim satellites.
+
+- [ ] **Step 4: Hardware test — 16-bit live capture + acquisition**
+
+```bash
+PRO=0000000000000000977c64de2b557213
+B="/Volumes/Radiator 8TB/mac-archive/hackrf/host/build/hackrf-tools/src"
+"$B/hackrf_debug" -d $PRO -P 2     # load ext_precision_rx gateware
+"$B/hackrf_pro" -d $PRO --rx-notch -327500
+"$B/hackrf_transfer" -d $PRO -r /tmp/l1_ext16.iq -f 1575420000 -s 2500000 -n 12500000 -l 40 -g 46 -a 0 -p 1
+ls -l /tmp/l1_ext16.iq             # expect 12.5M samples * 4 bytes = 50 MB
+./target/release/hackrf_gnss -m fix -f /tmp/l1_ext16.iq --fs-hz 2500000 --if-hz 0 --ext16
+```
+
+Expected: file size confirms 4 bytes/sample; acquisition runs against 12-bit data; compare metrics with the 8-bit + host-notch baseline (PRN 9 at 3.4–3.6). Restore standard gateware afterwards:
+
+```bash
+"$B/hackrf_debug" -d $PRO -P 0
+```
+
+- [ ] **Step 5: Commit**
+
+```bash
+cd "/Volumes/Radiator 8TB/gnss/hackrf_gnss"
+git add src/main.rs
+git commit -m "add --ext16: extended-precision (12-bit in int16) capture/analysis support"
+```
+
+(If `gnss/hackrf_gnss` is not a git repo, skip the commit and report.)
 
 ---
 
