@@ -177,9 +177,16 @@ typedef enum {
 	 * in the analog tuning plan: f_actual = f_tuned + f_nco.
 	 */
 	RADIO_TX_NCO = 24,
+	/**
+	 * RX notch filter tone offset from the LO in Hz, of type int64.
+	 * 0 disables the notch.  The gateware NCO runs at the AFE clock with
+	 * a 24-bit phase step.  The notch is applied digitally in the FPGA
+	 * and does not participate in the analog tuning plan.  Praline only.
+	 */
+	RADIO_RX_NOTCH = 25,
 } radio_register_t;
 
-#define RADIO_NUM_REGS (25)
+#define RADIO_NUM_REGS (26)
 #define RADIO_UNSET    (0xffffffffffffffff)
 
 /* register groups for bitfield convenience */

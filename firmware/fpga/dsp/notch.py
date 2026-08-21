@@ -9,6 +9,7 @@ from amaranth.lib           import wiring, stream
 from amaranth.lib.wiring    import In, Out
 
 from dsp.nco                import NCO
+from dsp.fir_mac16          import iCE40Multiplier
 from util                   import IQSample
 
 
@@ -22,8 +23,11 @@ class Notch(wiring.Component):
 
         y[n] = x[n-D] - est[n]
 
-    Latency of the estimate path: NCO (2) + mix-down (1) + integrator (1)
-    + mix-up (1) = 5 cycles.
+    All eight multiplies run on iCE40 DSP blocks (iCE40Multiplier), so the
+    filter costs almost no logic cells.  Estimate-path latency: NCO (2) +
+    mix-down MAC (3) + integrator (1) + mix-up MAC (3) + output (1) = 10
+    cycles; clean-path delay is 10, mix-up NCO delay is 4 (calibrated by
+    simulation sweep).
 
     Parameters
     ----------
@@ -42,14 +46,13 @@ class Notch(wiring.Component):
         Notch enable. When disabled the estimate is forced to zero.
     """
 
-
     def __init__(self, width=8, ratio=14, phase_width=24, domain="sync",
-                 xdelay=5, cdelay=2):
+                 xdelay=10, cdelay=4):
         self.width = width
         self.ratio = ratio
         self.phase_width = phase_width
         self.xdelay = xdelay   # clean-path delay (registers)
-        self.cdelay = cdelay   # NCO output delay into the mix-up stage
+        self.cdelay = cdelay   # NCO output delay into the mix-up MACs
         self._domain = domain
         sig = stream.Signature(IQSample(width), always_ready=True)
         super().__init__({
@@ -108,14 +111,32 @@ class Notch(wiring.Component):
             xq_d2.eq(xq_d),
         ]
 
-        # Mix down: xd = x * conj(cos, sin), dropping the NCO scale bits.
+        def mac(signame, a_sig, b_sig):
+            """One DSP-block multiplier, always-ready, 3-cycle latency."""
+            mm = iCE40Multiplier(a_width=16, b_width=16, p_width=0,
+                                 o_width=32, always_ready=True)
+            m.submodules[signame] = mm
+            m.d.comb += [
+                mm.a.eq(a_sig),
+                mm.b.eq(b_sig),
+                mm.valid_in.eq(1),
+                mm.ready_out.eq(1),
+            ]
+            return mm.o  # signed 32, valid 3 cycles after inputs
+
+        # Mix down: xd = x * conj(cos, sin).
+        p_xi_c = mac("md_ic", xi_d2, c0)
+        p_xq_s = mac("md_qs", xq_d2, s0)
+        p_xq_c = mac("md_qc", xq_d2, c0)
+        p_xi_s = mac("md_is", xi_d2, s0)
+
         mw = w + 2
+        rnd1 = 1 << (nco_w - 2)  # +0.5 LSB rounding before truncation
         xd_i = Signal(signed(mw))
         xd_q = Signal(signed(mw))
-        rnd1 = 1 << (nco_w - 2)  # +0.5 LSB rounding before truncation
         m.d[dom] += [
-            xd_i.eq((xi_d2 * c0 + xq_d2 * s0 + rnd1) >> (nco_w - 1)),
-            xd_q.eq((xq_d2 * c0 - xi_d2 * s0 + rnd1) >> (nco_w - 1)),
+            xd_i.eq((p_xi_c + p_xq_s + rnd1) >> (nco_w - 1)),
+            xd_q.eq((p_xq_c - p_xi_s + rnd1) >> (nco_w - 1)),
         ]
 
         # Leaky integrator (tone estimate at DC), extended precision.
@@ -137,19 +158,26 @@ class Notch(wiring.Component):
             m.d[dom] += [c_n.eq(c_d), s_n.eq(s_d)]
             c_d, s_d = c_n, s_n
 
-        # Mix up: est = avg * (cos, sin), dropping integrator + NCO scale.
+        # Integrator readout with +0.5 LSB rounding.
+        rnd2 = 1 << (self.ratio - 1)
         avg_i_r = Signal(signed(mw))
         avg_q_r = Signal(signed(mw))
-        rnd2 = 1 << (self.ratio - 1)  # +0.5 LSB rounding on integrator readout
         m.d.comb += [
             avg_i_r.eq((avg_i + rnd2) >> self.ratio),
             avg_q_r.eq((avg_q + rnd2) >> self.ratio),
         ]
+
+        # Mix up: est = avg * (cos, sin).
+        p_ai_c = mac("mu_ic", avg_i_r, c_d)
+        p_aq_s = mac("mu_qs", avg_q_r, s_d)
+        p_ai_s = mac("mu_is", avg_i_r, s_d)
+        p_aq_c = mac("mu_qc", avg_q_r, c_d)
+
         est_i = Signal(signed(mw + 2))
         est_q = Signal(signed(mw + 2))
         m.d[dom] += [
-            est_i.eq((avg_i_r * c_d - avg_q_r * s_d + rnd1) >> (nco_w - 1)),
-            est_q.eq((avg_i_r * s_d + avg_q_r * c_d + rnd1) >> (nco_w - 1)),
+            est_i.eq((p_ai_c - p_aq_s + rnd1) >> (nco_w - 1)),
+            est_q.eq((p_ai_s + p_aq_c + rnd1) >> (nco_w - 1)),
         ]
 
         # Subtract the estimate (zero when disabled), saturate to width.

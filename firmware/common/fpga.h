@@ -27,7 +27,7 @@
 #include "ice40_spi.h"
 
 /* Up to 7 registers, each containing up to 8 bits of data */
-#define FPGA_NUM_REGS            7
+#define FPGA_NUM_REGS            11
 #define FPGA_DATA_REGS_MAX_VALUE 255
 
 typedef enum {
@@ -85,6 +85,11 @@ void fpga_set_tx_interpolation_ratio(fpga_driver_t* const drv, const uint8_t val
 void fpga_set_prbs_enable(fpga_driver_t* const drv, const bool enable);
 void fpga_set_tx_nco_enable(fpga_driver_t* const drv, const bool enable);
 void fpga_set_tx_nco_pstep(fpga_driver_t* const drv, const uint8_t phase_increment);
+void fpga_set_rx_notch_enable(fpga_driver_t* const drv, const bool enable);
+void fpga_set_rx_notch_coef(
+	fpga_driver_t* const drv,
+	const int8_t coef_r,
+	const int8_t coef_i);
 
 bool fpga_image_load(struct fpga_loader_t* loader, unsigned int index);
 bool fpga_spi_selftest(void);

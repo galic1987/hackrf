@@ -70,3 +70,11 @@ __MREG__(FPGA_STANDARD_TX_INTRP, 5, 0, 3)
 
 /* REG 06 (6): TX_PSTEP */
 __MREG__(FPGA_STANDARD_TX_PSTEP, 6, 0, 8)
+
+/* REG 07 (7): RX_NOTCH_CTRL */
+__MREG__(FPGA_STANDARD_RX_NOTCH_EN, 7, 0, 1)
+
+/* REG 08-09 (8-9): RX_NOTCH coefficients cos/sin of the notch angle,
+ * signed, scaled to +-127 */
+__MREG__(FPGA_STANDARD_RX_NOTCH_COEF_R, 8, 0, 8)
+__MREG__(FPGA_STANDARD_RX_NOTCH_COEF_I, 9, 0, 8)

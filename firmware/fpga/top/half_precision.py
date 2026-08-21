@@ -5,13 +5,14 @@
 # Copyright (c) 2024 Great Scott Gadgets <info@greatscottgadgets.com>
 # SPDX-License-Identifier: BSD-3-Clause
 
-from amaranth               import Elaboratable, Module, DomainRenamer
-from amaranth.lib           import stream, wiring
+from amaranth               import Elaboratable, Module, DomainRenamer, Signal, signed
+from amaranth.lib           import stream, wiring, cdc
 from amaranth.lib.wiring    import Out, In, connect
 
 from board                  import PralinePlatform, ClockDomainGenerator
 from interface              import MAX586xInterface, SGPIOInterface, SPIRegisterInterface
 from dsp.dc_block           import DCBlock
+from dsp.zero_notch         import ZeroNotch
 from dsp.round              import convergent_round
 from util                   import IQSample, ClockConverter
 
@@ -65,6 +66,10 @@ class Top(Elaboratable):
 
         rx_chain = {
             "dc_block":      DCBlock(width=8, num_channels=2, domain=adc_clk),
+
+            # Programmable single-zero notch.
+            "notch":         DomainRenamer(adc_clk)(ZeroNotch(width=8, domain=adc_clk)),
+
             "half_prec":     DomainRenamer(adc_clk)(IQHalfPrecisionConverter()),
             "clkconv":       ClockConverter(IQSample(4), 16, adc_clk, "sync"),
         }
@@ -99,12 +104,28 @@ class Top(Elaboratable):
 
         # Add control registers.
         ctrl  = spi_regs.add_register(0x01, init=0)
+        rx_notch_ctrl   = spi_regs.add_register(0x07, init=0, size=1)
+        rx_notch_coef_r = spi_regs.add_register(0x08, init=0)
+        rx_notch_coef_i = spi_regs.add_register(0x09, init=0)
         m.d.comb += [
             # Trigger enable.
             mcu_intf.trigger_en                 .eq(ctrl[7]),
 
             # RX settings.
             rx_chain["dc_block"].enable         .eq(ctrl[0]),
+        ]
+
+        # RX notch filter control (sync -> adc_clk domain).
+        notch_en_adclk = Signal()
+        notch_cr_adclk = Signal(signed(8))
+        notch_ci_adclk = Signal(signed(8))
+        m.submodules.notch_en_cdc = cdc.FFSynchronizer(rx_notch_ctrl, notch_en_adclk, o_domain=adc_clk)
+        m.submodules.notch_cr_cdc = cdc.FFSynchronizer(rx_notch_coef_r, notch_cr_adclk, o_domain=adc_clk)
+        m.submodules.notch_ci_cdc = cdc.FFSynchronizer(rx_notch_coef_i, notch_ci_adclk, o_domain=adc_clk)
+        m.d.comb += [
+            rx_chain["notch"].enable .eq(notch_en_adclk),
+            rx_chain["notch"].coef_r .eq(notch_cr_adclk),
+            rx_chain["notch"].coef_i .eq(notch_ci_adclk),
         ]
 
         return m

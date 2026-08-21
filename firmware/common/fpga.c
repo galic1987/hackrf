@@ -136,3 +136,19 @@ void fpga_set_tx_nco_pstep(fpga_driver_t* const drv, const uint8_t phase_increme
 	set_FPGA_STANDARD_TX_PSTEP(drv, phase_increment);
 	fpga_regs_commit(drv);
 }
+
+void fpga_set_rx_notch_enable(fpga_driver_t* const drv, const bool enable)
+{
+	set_FPGA_STANDARD_RX_NOTCH_EN(drv, enable ? 1 : 0);
+	fpga_regs_commit(drv);
+}
+
+void fpga_set_rx_notch_coef(
+	fpga_driver_t* const drv,
+	const int8_t coef_r,
+	const int8_t coef_i)
+{
+	set_FPGA_STANDARD_RX_NOTCH_COEF_R(drv, (uint8_t) coef_r);
+	set_FPGA_STANDARD_RX_NOTCH_COEF_I(drv, (uint8_t) coef_i);
+	fpga_regs_commit(drv);
+}

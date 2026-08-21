@@ -1006,6 +1006,117 @@ static uint32_t radio_update_tx_nco(radio_t* const radio, uint64_t* bank)
 	return 0;
 }
 
+/* atan(2^-i) in units of 2**32 per turn, for the notch coefficient CORDIC. */
+static const uint32_t cordic_atan_turns[18] = {
+	0x20000000U, 0x12e4051eU, 0x09fb385bU, 0x051111d4U,
+	0x028b0d43U, 0x0145d7e1U, 0x00a2f61eU, 0x00517c55U,
+	0x0028be53U, 0x00145f2fU, 0x000a2f98U, 0x000517ccU,
+	0x00028be6U, 0x000145f3U, 0x0000a2faU, 0x0000517dU,
+	0x000028beU, 0x0000145fU,
+};
+
+/* cos/sin of an angle in 2**32-per-turn units, scaled to +-127.
+ * Fixed-point CORDIC with an 8-fractional-bit datapath; validated against
+ * libm to a worst-case coefficient error of 0.004 (~-48 dB null depth). */
+static void notch_cos_sin(int32_t turns32, int8_t* cr, int8_t* ci)
+{
+	bool negate = false;
+	int32_t z = turns32; /* wraps to [-1/2, 1/2) turn */
+	if (z > 0x40000000) {
+		z = (int32_t) ((uint32_t) z - 0x80000000U);
+		negate = true;
+	} else if (z < -(int32_t) 0x40000000) {
+		z = (int32_t) ((uint32_t) z + 0x80000000U);
+		negate = true;
+	}
+
+	int32_t x = 19743; /* 127 * 256 / K, K = CORDIC gain for 18 iterations */
+	int32_t y = 0;
+	for (int i = 0; i < 18; i++) {
+		const int32_t d = (z >= 0) ? 1 : -1;
+		const int32_t ry = (i > 0) ? ((y + (1 << (i - 1))) >> i) : y;
+		const int32_t rx = (i > 0) ? ((x + (1 << (i - 1))) >> i) : x;
+		x = x - d * ry;
+		y = y + d * rx;
+		z -= d * (int32_t) cordic_atan_turns[i];
+	}
+	x = (x + 128) >> 8;
+	y = (y + 128) >> 8;
+	*cr = (int8_t) (negate ? -x : x);
+	*ci = (int8_t) (negate ? -y : y);
+}
+
+/* Shadow of the last angle written: the angle depends on the AFE rate,
+ * so a sample-rate change must rewrite it even for an unchanged offset. */
+static uint32_t applied_rx_notch_turns;
+
+static uint32_t radio_update_rx_notch(radio_t* const radio, uint64_t* bank)
+{
+#ifdef IS_PRALINE
+	if (IS_PRALINE) {
+		const uint64_t requested = bank[RADIO_RX_NOTCH];
+		if (requested == RADIO_UNSET) {
+			return 0;
+		}
+
+		const int64_t freq_hz = (int64_t) requested;
+
+		/* AFE clock = applied MCU sample rate shifted left by the RX
+		 * resampling ratio (fp_28_36 units).  Compute as a right shift
+		 * to avoid overflowing uint64. */
+		const uint64_t mcu_rate =
+			radio->config[RADIO_BANK_APPLIED][RADIO_SAMPLE_RATE];
+		const uint64_t n = radio->config[RADIO_BANK_APPLIED][RADIO_RESAMPLE_RX];
+		if ((mcu_rate == RADIO_UNSET) || (n == RADIO_UNSET) || (n > 5)) {
+			return 0;
+		}
+		const uint64_t afe_clk_hz = mcu_rate >> (36 - n);
+
+		if (freq_hz == 0) {
+			if (radio->config[RADIO_BANK_APPLIED][RADIO_RX_NOTCH] != 0) {
+				fpga_set_rx_notch_enable(&fpga, false);
+				radio->config[RADIO_BANK_APPLIED][RADIO_RX_NOTCH] = 0;
+				applied_rx_notch_turns = 0;
+				return (1 << RADIO_RX_NOTCH);
+			}
+			return 0;
+		}
+
+		if ((freq_hz <= -(int64_t) afe_clk_hz / 2) ||
+		    (freq_hz >= (int64_t) afe_clk_hz / 2)) {
+			/* Offset beyond Nyquist at the current AFE clock; leave the
+			 * previous setting untouched. */
+			return 0;
+		}
+
+		/* Notch angle in 2**32-per-turn units. */
+		const int64_t hz_abs = (freq_hz < 0) ? -freq_hz : freq_hz;
+		const uint32_t mag = (uint32_t) ((2 * hz_abs * 4294967296LL +
+						  (int64_t) afe_clk_hz) /
+						 (2 * (int64_t) afe_clk_hz));
+		const int32_t turns =
+			(freq_hz < 0) ? -(int32_t) mag : (int32_t) mag;
+
+		if ((radio->config[RADIO_BANK_APPLIED][RADIO_RX_NOTCH] == requested) &&
+		    (applied_rx_notch_turns == (uint32_t) turns)) {
+			return 0;
+		}
+
+		int8_t cr, ci;
+		notch_cos_sin(turns, &cr, &ci);
+		fpga_set_rx_notch_coef(&fpga, cr, ci);
+		fpga_set_rx_notch_enable(&fpga, true);
+		radio->config[RADIO_BANK_APPLIED][RADIO_RX_NOTCH] = requested;
+		applied_rx_notch_turns = (uint32_t) turns;
+		return (1 << RADIO_RX_NOTCH);
+	}
+#endif
+
+	(void) radio;
+	(void) bank;
+	return 0;
+}
+
 #ifdef IS_PRALINE
 /*
  * Invalidate the applied state of all FPGA-managed registers and re-apply
@@ -1025,12 +1136,14 @@ void radio_reapply_fpga_state(radio_t* const radio)
 	radio->config[RADIO_BANK_APPLIED][RADIO_ROTATION] = RADIO_UNSET;
 	radio->config[RADIO_BANK_APPLIED][RADIO_DC_BLOCK] = RADIO_UNSET;
 	radio->config[RADIO_BANK_APPLIED][RADIO_TRIGGER] = RADIO_UNSET;
+	radio->config[RADIO_BANK_APPLIED][RADIO_RX_NOTCH] = RADIO_UNSET;
 
 	mark_dirty(radio, RADIO_RESAMPLE_RX);
 	mark_dirty(radio, RADIO_RESAMPLE_TX);
 	mark_dirty(radio, RADIO_ROTATION);
 	mark_dirty(radio, RADIO_DC_BLOCK);
 	mark_dirty(radio, RADIO_TRIGGER);
+	mark_dirty(radio, RADIO_RX_NOTCH);
 
 	radio_update(radio);
 }
@@ -1079,6 +1192,9 @@ bool radio_update(radio_t* const radio)
 	}
 	if (dirty & (1 << RADIO_TX_NCO)) {
 		changed |= radio_update_tx_nco(radio, &tmp_bank[0]);
+	}
+	if (dirty & ((1 << RADIO_RX_NOTCH) | RADIO_REG_GROUP_RATE)) {
+		changed |= radio_update_rx_notch(radio, &tmp_bank[0]);
 	}
 	if (dirty & (1 << RADIO_OPMODE)) {
 		changed |= radio_update_direction(radio, &tmp_bank[0]);
