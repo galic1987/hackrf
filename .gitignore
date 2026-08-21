@@ -76,3 +76,4 @@ firmware/**/build
 *.pyc
 
 .toolchain/
+tools/
