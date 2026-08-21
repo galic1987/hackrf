@@ -1221,3 +1221,12 @@ What actually happened, for future reference:
 - **ext_precision_rx notch deferred**: the ext image already spends its MAC16s on FIR decimators and is LUT-heavy (94% stock); the notch pushes it to 143%. Needs a v2 that shares/time-multiplexes MACs with the decimators. `top/ext_precision_rx.py` wiring was reverted; `dsp/notch.py` is image-agnostic and ready.
 - **Firmware gotcha**: `FPGA_NUM_REGS` was 7; the new regs 7-10 required growing it to 11 (caught by -Warray-bounds).
 - **libopencm3 stale .d files** in the repo's submodule reference a dead toolchain path (`~/hackrf/toolchain/...`); they were deleted. If the firmware build fails with "No rule to make target .../stdint.h", `find firmware/libopencm3 -name "*.d" -delete`.
+
+### Late pivot (same day): single-zero notch replaces heterodyne notch
+
+- Even on MAC16s the heterodyne notch failed nextpnr on both images (128%/143% LC; then a marginal 48 MHz sync-domain timing failure at 95%). Replaced by **dsp/zero_notch.py**: `y[n] = x[n] − c·x[n−1]`, four DSP-block multipliers, no NCO/integrator/delay-line. Sim: 48 dB null, transparent bypass. Fits standard (85% LC) and half_precision (20%); wired into both.
+- **ext_precision_rx cannot host any multiplier-based notch**: stock already consumes all 8 SB_MAC16 (mixer + MAC16 FIRs) and 94% of LCs. Left stock. Future option: sacrifice the ext mixer's fine-shift for a 4-MAC zero-notch.
+- Firmware now computes cos/sin coefficients from Hz with an 18-iteration fixed-point CORDIC (8-fractional-bit datapath, validated vs libm to 0.004 max error = −48 dB null). Same `RADIO_RX_NOTCH` Hz semantics on all images.
+- Bugs found by HIL: `fpga_driver_t.regs_dirty` was `uint8_t` — registers ≥8 never marked dirty (coefs silently never committed); widened to `uint16_t`.
+- Timing: standard image needed a nextpnr seed sweep (stock CDC path in tx_clkconv marginal at 48 MHz); seed 1 passes.
+- HIL: register path verified on hardware (enable + coefficients exact). Live-tone A/B could not run: the 1575.0925 MHz emitter left the environment mid-session. Suppression evidence is simulation + register-level verification.

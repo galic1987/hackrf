@@ -39,7 +39,7 @@ typedef enum {
 typedef struct {
 	ice40_spi_driver_t* bus;
 	uint8_t regs[FPGA_NUM_REGS];
-	uint8_t regs_dirty;
+	uint16_t regs_dirty;
 } fpga_driver_t;
 
 struct fpga_loader_t {
