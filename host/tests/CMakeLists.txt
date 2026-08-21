@@ -20,6 +20,10 @@ add_executable(test_cpld_checksum test_cpld_checksum.c mock_libusb.c)
 target_link_libraries(test_cpld_checksum PRIVATE hackrf_static)
 add_test(NAME test_cpld_checksum COMMAND test_cpld_checksum)
 
+add_executable(test_pro_fpga test_pro_fpga.c mock_libusb.c)
+target_link_libraries(test_pro_fpga PRIVATE hackrf_static)
+add_test(NAME test_pro_fpga COMMAND test_pro_fpga)
+
 add_executable(test_fpga_bitstream test_fpga_bitstream.c mock_libusb.c)
 target_link_libraries(test_fpga_bitstream PRIVATE hackrf_static)
 add_test(NAME test_fpga_bitstream COMMAND test_fpga_bitstream)

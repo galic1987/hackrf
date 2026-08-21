@@ -24,6 +24,7 @@
 #include "usb_api_praline.h"
 
 #include <clock_io.h>
+#include <delay.h>
 #include <platform_detect.h>
 #include <radio.h>
 #include <rf_path.h>
@@ -128,6 +129,25 @@ usb_request_status_t usb_vendor_request_set_fpga_bitstream(
 		if (!fpga_image_load(&fpga_loader, endpoint->setup.value)) {
 			return USB_REQUEST_STATUS_STALL;
 		}
+		/* Mirror the boot sequence (see hackrf_usb.c main()): give the
+		 * fresh gateware time to come up, reset the register cache,
+		 * and verify the SPI and SGPIO links.  Without this, a
+		 * runtime switch can leave the sample path silently degraded
+		 * (register access works, the SGPIO stream does not). */
+		delay_us(100);
+		fpga_init(&fpga);
+		/* PRBS mode only exists in the standard gateware (index 0),
+		 * so the SGPIO link test can only run there. */
+		bool links_ok = fpga_spi_selftest();
+		if (endpoint->setup.value == 0) {
+			links_ok = fpga_sgpio_selftest() && links_ok;
+		}
+		if (!links_ok) {
+			return USB_REQUEST_STATUS_STALL;
+		}
+		/* The fresh gateware resets its registers to defaults;
+		 * re-apply the requested radio configuration to it. */
+		radio_reapply_fpga_state(&radio);
 		usb_transfer_schedule_ack(endpoint->in);
 	}
 	return USB_REQUEST_STATUS_OK;

@@ -101,12 +101,18 @@ usb_request_status_t usb_vendor_request_cpld_checksum(
 	}
 
 	if (stage == USB_TRANSFER_STAGE_SETUP) {
+		bool read_ok;
+
 		cpld_jtag_take(&jtag_cpld);
-		cpld_xc2c64a_jtag_sram_checksum(
+		read_ok = cpld_xc2c64a_jtag_sram_checksum(
 			&jtag_cpld,
 			&cpld_hackrf_verify,
 			&cpld_crc);
 		cpld_jtag_release(&jtag_cpld);
+
+		if (!read_ok) {
+			return USB_REQUEST_STATUS_STALL;
+		}
 
 		length = (uint8_t) sizeof(cpld_crc);
 		memcpy(endpoint->buffer, &cpld_crc, length);

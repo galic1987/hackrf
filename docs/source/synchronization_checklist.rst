@@ -18,7 +18,7 @@ checklist may be useful for troubleshooting:
 * **Does your firmware support the required USB API version?**
 
     Some synchronization features (such as ``hackrf_sync_start()``) require
-    firmware USB API version ``0x0113`` or later.  Run ``hackrf_info`` and
+    firmware USB API version ``0x0114`` or later.  Run ``hackrf_info`` and
     check the ``API`` field printed for each device.  If the API version is
     too old, update the firmware.
 

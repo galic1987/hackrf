@@ -169,9 +169,17 @@ typedef enum {
 	 * Correction factor for radio reference clock, of type fp_1_63_t.
 	 */
 	RADIO_CLOCK_CORRECTION = 23,
+	/**
+	 * TX NCO offset frequency in Hz, of type int64.  0 disables the NCO.
+	 * The gateware NCO runs at the DAC clock: f_nco = pstep * dac_clk / 1024
+	 * with an 8-bit pstep, so only offsets up to ~dac_clk/4 are reachable.
+	 * The offset is applied digitally in the FPGA and does not participate
+	 * in the analog tuning plan: f_actual = f_tuned + f_nco.
+	 */
+	RADIO_TX_NCO = 24,
 } radio_register_t;
 
-#define RADIO_NUM_REGS (24)
+#define RADIO_NUM_REGS (25)
 #define RADIO_UNSET    (0xffffffffffffffff)
 
 /* register groups for bitfield convenience */
@@ -265,6 +273,15 @@ bool radio_update(radio_t* const radio);
  * the request bank for the new mode.
  */
 void radio_switch_opmode(radio_t* const radio, const transceiver_mode_t mode);
+
+#ifdef IS_PRALINE
+/**
+ * Invalidate applied FPGA-managed register state and re-apply the requested
+ * configuration.  Must be called after an FPGA bitstream (re)load, which
+ * resets the gateware registers to defaults.  No-op on other platforms.
+ */
+void radio_reapply_fpga_state(radio_t* const radio);
+#endif
 
 /**
  * Driver instance.

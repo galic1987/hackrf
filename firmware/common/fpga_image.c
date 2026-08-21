@@ -28,6 +28,8 @@
 #include "lz4_blk.h"
 #include "selftest.h"
 
+unsigned int fpga_image_current_index = 0;
+
 struct fpga_image_read_ctx {
 	struct fpga_loader_t* loader;
 	uint32_t addr;
@@ -99,6 +101,8 @@ bool fpga_image_load(struct fpga_loader_t* loader, unsigned int index)
 	selftest.fpga_image_load = success ? PASSED : FAILED;
 	if (selftest.fpga_image_load != PASSED) {
 		selftest.report.pass = false;
+	} else {
+		fpga_image_current_index = index;
 	}
 
 	return success;

@@ -349,7 +349,7 @@ usb_request_status_t usb_vendor_request_write_radio_reg(
 	uint8_t bank;
 	if (stage == USB_TRANSFER_STAGE_SETUP) {
 		bank = endpoint->setup.index;
-		if (bank >= RADIO_NUM_BANKS) {
+		if ((bank >= RADIO_NUM_BANKS) && (bank != RADIO_BANK_ALL)) {
 			return USB_REQUEST_STATUS_STALL;
 		}
 		uint8_t num_regs = endpoint->setup.length / 9;

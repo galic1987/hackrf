@@ -1,5 +1,7 @@
 /*
- * Copyright 2025 Great Scott Gadgets <info@greatscottgadgets.com>
+ * Copyright 2025-2026 Great Scott Gadgets <info@greatscottgadgets.com>
+ *
+ * This file is part of HackRF.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -26,13 +28,18 @@ static void usage()
 	printf("Usage:\n");
 	printf("\t[-d serial_number] # Serial number of desired HackRF Pro.\n");
 	printf("\t[--dc-block on|off] # Enable/disable FPGA DC block filter.\n");
-	printf("\t[--decimation N] # RX decimation: 0=none, 1=÷2, 2=÷4, 3=÷8, 4=÷16, 5=÷32\n");
-	printf("\t[--interpolation N] # TX interpolation: 0=none, 1=÷2, 2=÷4, 3=÷8\n");
+	printf("\t[--decimation N] # RX decimation log2: 0=÷1, 1=÷2, 2=÷4, 3=÷8, 4=÷16, 5=÷32\n");
+	printf("\t[--interpolation N] # TX interpolation log2: 0=÷1, 1=÷2, 2=÷4, 3=÷8\n");
 	printf("\t[--quarter-shift up|down|none] # Digital spectrum shift by ±Fs/4.\n");
-	printf("\t[--nco-freq HZ] # Enable NCO and set frequency (Hz).\n");
-	printf("\t[--read-reg ADDR] # Read raw FPGA register.\n");
-	printf("\t[--write-reg ADDR VAL] # Write raw FPGA register.\n");
+	printf("\t[--nco-freq HZ] # TX NCO offset in Hz (0 disables). Firmware computes\n");
+	printf("\t                 # the phase step from the actual DAC clock.\n");
+	printf("\t[--clock-corr PPM] # Reference clock correction in PPM (±10000).\n");
+	printf("\t[--read-reg ADDR] # Read raw FPGA register (debug; bypasses radio management).\n");
+	printf("\t[--write-reg ADDR VAL] # Write raw FPGA register (debug; bypasses radio management).\n");
 	printf("\t[-h] # This help.\n");
+	printf("\nSettings made via the managed options survive sample-rate and frequency\n");
+	printf("changes. Raw register access is for debugging and may be overwritten by\n");
+	printf("the firmware's radio configuration management.\n");
 }
 
 static int parse_on_off(const char* s, bool* out)
@@ -51,42 +58,50 @@ static int parse_on_off(const char* s, bool* out)
 static int parse_shift(const char* s, uint8_t* out)
 {
 	if (strcmp(s, "none") == 0) {
-		*out = 0;
+		*out = HACKRF_QUARTER_SHIFT_NONE;
 		return HACKRF_SUCCESS;
 	}
 	if (strcmp(s, "up") == 0) {
-		*out = 1;
+		*out = HACKRF_QUARTER_SHIFT_UP;
 		return HACKRF_SUCCESS;
 	}
 	if (strcmp(s, "down") == 0) {
-		*out = 2;
+		*out = HACKRF_QUARTER_SHIFT_DOWN;
 		return HACKRF_SUCCESS;
 	}
 	return HACKRF_ERROR_INVALID_PARAM;
 }
 
-static int fpga_write_reg(hackrf_device* device, uint8_t addr, uint8_t value)
-{ return hackrf_fpga_write_register(device, addr, value); }
-
-static int fpga_read_reg(hackrf_device* device, uint8_t addr, uint8_t* value)
-{ return hackrf_fpga_read_register(device, addr, value); }
+static const char* shift_name(uint8_t mode)
+{
+	switch (mode) {
+	case HACKRF_QUARTER_SHIFT_UP:
+		return "up";
+	case HACKRF_QUARTER_SHIFT_DOWN:
+		return "down";
+	default:
+		return "none";
+	}
+}
 
 int main(int argc, char** argv)
 {
 	int opt;
-	int result;
+	int result = HACKRF_SUCCESS;
 	const char* serial_number = NULL;
 	hackrf_device* device = NULL;
 	bool do_dc_block = false;
 	bool dc_block = false;
 	bool do_decimation = false;
-	uint8_t decimation = 0;
+	long decimation = 0;
 	bool do_interpolation = false;
-	uint8_t interpolation = 0;
+	long interpolation = 0;
 	bool do_quarter_shift = false;
 	uint8_t quarter_shift = 0;
 	bool do_nco = false;
-	uint64_t nco_freq = 0;
+	int64_t nco_freq = 0;
+	bool do_clock_corr = false;
+	double clock_corr = 0.0;
 	bool do_read_reg = false;
 	uint8_t read_reg_addr = 0;
 	bool do_write_reg = false;
@@ -101,6 +116,7 @@ int main(int argc, char** argv)
 		{"nco-freq", required_argument, 0, 5},
 		{"read-reg", required_argument, 0, 6},
 		{"write-reg", required_argument, 0, 7},
+		{"clock-corr", required_argument, 0, 8},
 		{"device", required_argument, 0, 'd'},
 		{"help", no_argument, 0, 'h'},
 		{0, 0, 0, 0},
@@ -114,11 +130,11 @@ int main(int argc, char** argv)
 			do_dc_block = true;
 			break;
 		case 2:
-			decimation = (uint8_t) atoi(optarg);
+			decimation = strtol(optarg, NULL, 10);
 			do_decimation = true;
 			break;
 		case 3:
-			interpolation = (uint8_t) atoi(optarg);
+			interpolation = strtol(optarg, NULL, 10);
 			do_interpolation = true;
 			break;
 		case 4:
@@ -126,7 +142,7 @@ int main(int argc, char** argv)
 			do_quarter_shift = true;
 			break;
 		case 5:
-			nco_freq = strtoull(optarg, NULL, 10);
+			nco_freq = strtoll(optarg, NULL, 10);
 			do_nco = true;
 			break;
 		case 6:
@@ -138,6 +154,10 @@ int main(int argc, char** argv)
 			write_reg_val = (uint8_t) strtoul(argv[optind], NULL, 0);
 			optind++;
 			do_write_reg = true;
+			break;
+		case 8:
+			clock_corr = strtod(optarg, NULL);
+			do_clock_corr = true;
 			break;
 		case 'd':
 			serial_number = optarg;
@@ -177,17 +197,20 @@ int main(int argc, char** argv)
 		return EXIT_FAILURE;
 	}
 
-	if (do_dc_block) {
-		uint8_t ctrl;
-		result = fpga_read_reg(device, 1, &ctrl);
-		if (result == HACKRF_SUCCESS) {
-			if (dc_block) {
-				ctrl |= 0x01;
-			} else {
-				ctrl &= ~0x01;
-			}
-			result = fpga_write_reg(device, 1, ctrl);
+	{
+		uint8_t board_id = BOARD_ID_UNDETECTED;
+		result = hackrf_board_id_read(device, &board_id);
+		if (result != HACKRF_SUCCESS || board_id != BOARD_ID_PRALINE) {
+			fprintf(stderr,
+				"hackrf_pro only supports HackRF Pro (praline) boards.\n");
+			hackrf_close(device);
+			hackrf_exit();
+			return EXIT_FAILURE;
 		}
+	}
+
+	if (do_dc_block) {
+		result = hackrf_set_dc_block(device, dc_block);
 		if (result != HACKRF_SUCCESS) {
 			fprintf(stderr,
 				"DC block failed: %s (%d)\n",
@@ -199,74 +222,88 @@ int main(int argc, char** argv)
 	}
 
 	if (do_decimation) {
-		result = fpga_write_reg(device, 2, decimation & 0x07);
+		result = hackrf_set_rx_decimation(device, (uint8_t) decimation);
 		if (result != HACKRF_SUCCESS) {
 			fprintf(stderr,
 				"Decimation failed: %s (%d)\n",
 				hackrf_error_name(result),
 				result);
 		} else {
-			printf("RX decimation set to %u\n", decimation);
+			uint8_t applied = 0;
+			hackrf_get_rx_decimation(device, &applied);
+			printf("RX decimation set to ÷%u (applied log2=%u)\n",
+			       1u << applied,
+			       applied);
 		}
 	}
 
 	if (do_interpolation) {
-		result = fpga_write_reg(device, 5, interpolation & 0x07);
+		result = hackrf_set_tx_interpolation(device, (uint8_t) interpolation);
 		if (result != HACKRF_SUCCESS) {
 			fprintf(stderr,
 				"Interpolation failed: %s (%d)\n",
 				hackrf_error_name(result),
 				result);
 		} else {
-			printf("TX interpolation set to %u\n", interpolation);
+			uint8_t applied = 0;
+			hackrf_get_tx_interpolation(device, &applied);
+			printf("TX interpolation set to ÷%u (applied log2=%u)\n",
+			       1u << applied,
+			       applied);
 		}
 	}
 
 	if (do_quarter_shift) {
-		result = fpga_write_reg(device, 3, quarter_shift);
+		result = hackrf_set_quarter_shift(device, quarter_shift);
 		if (result != HACKRF_SUCCESS) {
 			fprintf(stderr,
 				"Quarter-shift failed: %s (%d)\n",
 				hackrf_error_name(result),
 				result);
 		} else {
-			printf("Quarter-shift set to %s\n",
-			       quarter_shift == 0         ? "none" :
-				       quarter_shift == 1 ? "up" :
-							    "down");
+			uint8_t applied = 0;
+			hackrf_get_quarter_shift(device, &applied);
+			printf("Quarter-shift set to %s (applied: %s)\n",
+			       shift_name(quarter_shift),
+			       shift_name(applied));
 		}
 	}
 
 	if (do_nco) {
-		/* Enable NCO via TX_CTRL reg 4, bit 0 */
-		uint8_t tx_ctrl;
-		result = fpga_read_reg(device, 4, &tx_ctrl);
-		if (result == HACKRF_SUCCESS) {
-			tx_ctrl |= 0x01;
-			result = fpga_write_reg(device, 4, tx_ctrl);
-		}
-		if (result == HACKRF_SUCCESS) {
-			/* Set NCO phase increment via TX_PSTEP reg 6 */
-			/* Phase increment = (nco_freq * 256) / sample_rate
-			 * For simplicity we write the raw 8-bit value;
-			 * users can compute the correct value externally. */
-			uint8_t pstep = (uint8_t) (nco_freq & 0xFF);
-			result = fpga_write_reg(device, 6, pstep);
-		}
+		result = hackrf_set_tx_nco(device, nco_freq);
 		if (result != HACKRF_SUCCESS) {
 			fprintf(stderr,
 				"NCO setup failed: %s (%d)\n",
 				hackrf_error_name(result),
 				result);
 		} else {
-			printf("NCO enabled with phase increment %u\n",
-			       (unsigned int) (nco_freq & 0xFF));
+			int64_t applied = 0;
+			hackrf_get_tx_nco(device, &applied);
+			printf("TX NCO offset set to %lld Hz (applied: %lld Hz)\n",
+			       (long long) nco_freq,
+			       (long long) applied);
+		}
+	}
+
+	if (do_clock_corr) {
+		result = hackrf_set_clock_correction(device, clock_corr);
+		if (result != HACKRF_SUCCESS) {
+			fprintf(stderr,
+				"Clock correction failed: %s (%d)\n",
+				hackrf_error_name(result),
+				result);
+		} else {
+			double applied = 0.0;
+			hackrf_get_clock_correction(device, &applied);
+			printf("Clock correction set to %.2f ppm (applied: %.2f ppm)\n",
+			       clock_corr,
+			       applied);
 		}
 	}
 
 	if (do_read_reg) {
 		uint8_t value;
-		result = fpga_read_reg(device, read_reg_addr, &value);
+		result = hackrf_fpga_read_register(device, read_reg_addr, &value);
 		if (result != HACKRF_SUCCESS) {
 			fprintf(stderr,
 				"Register read failed: %s (%d)\n",
@@ -278,7 +315,9 @@ int main(int argc, char** argv)
 	}
 
 	if (do_write_reg) {
-		result = fpga_write_reg(device, write_reg_addr, write_reg_val);
+		fprintf(stderr,
+			"warning: raw register writes bypass radio management and may be overwritten\n");
+		result = hackrf_fpga_write_register(device, write_reg_addr, write_reg_val);
 		if (result != HACKRF_SUCCESS) {
 			fprintf(stderr,
 				"Register write failed: %s (%d)\n",

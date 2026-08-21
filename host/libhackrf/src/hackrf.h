@@ -90,7 +90,7 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
  * # USB API versions
  * As all functionality of HackRF devices requires cooperation between the firmware and the host, both devices can have outdated software. If host machine software is outdated, the new functions will be unavailable in `hackrf.h`, causing linking errors. If the device firmware is outdated, the functions will return @ref HACKRF_ERROR_USB_API_VERSION.
  * Since device firmware and USB API are separate (but closely related), USB API has its own version numbers.
- * Here is a list of all the functions that require a certain minimum USB API version, up to version 0x0113
+ * Here is a list of all the functions that require a certain minimum USB API version, up to version 0x0115
  * ## 0x0102
  * - @ref hackrf_set_hw_sync_mode
  * - @ref hackrf_init_sweep
@@ -149,7 +149,12 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
  * ## 0x0112
  * (no new functions)
  * ## 0x0113
+ * (no new functions)
+ * ## 0x0114
  * - @ref hackrf_sync_start
+ * ## 0x0115
+ * - @ref hackrf_set_tx_nco
+ * - @ref hackrf_get_tx_nco
  */
 
 /**
@@ -2034,7 +2039,11 @@ extern ADDAPI int ADDCALL hackrf_set_hw_sync_mode(
  * which allows multiple HackRF devices to synchronize their start of capture
  * via the hardware trigger line.
  *
- * Requires USB API version 0x0113 or above!
+ * Calling this function with mode 0 (OFF) also disarms the trigger, so a
+ * device that was previously armed returns to normal (untriggered) start
+ * behavior.
+ *
+ * Requires USB API version 0x0114 or above!
  * @param device the HackRF device handle
  * @param mode transceiver mode to enter. Valid values are:
  *             - 0 (OFF)
@@ -2456,6 +2465,129 @@ extern ADDAPI int ADDCALL hackrf_radio_write_register(
 	const uint8_t bank,
 	const uint8_t register_number,
 	const uint64_t value);
+
+/**
+ * @defgroup pro_fpga HackRF Pro FPGA features
+ * @brief High-level control of the HackRF Pro gateware DSP features.
+ *
+ * These functions wrap the radio register interface, so settings survive
+ * sample-rate and frequency changes (the firmware's radio configuration
+ * management owns the gateware registers).  Raw @ref hackrf_fpga_write_register
+ * pokes do not have that property.
+ * @{
+ */
+
+/** Quarter-shift mode for @ref hackrf_set_quarter_shift */
+enum hackrf_quarter_shift_mode {
+	HACKRF_QUARTER_SHIFT_NONE = 0, /**< bypass */
+	HACKRF_QUARTER_SHIFT_DOWN = 1, /**< shift spectrum down by Fs/4 */
+	HACKRF_QUARTER_SHIFT_UP = 2,   /**< shift spectrum up by Fs/4 */
+};
+
+/**
+ * Enable or disable the FPGA DC block filter (Pro only).
+ * @return @ref HACKRF_SUCCESS on success or @ref hackrf_error variant
+ */
+extern ADDAPI int ADDCALL hackrf_set_dc_block(hackrf_device* device, const bool enable);
+
+/**
+ * Read the applied FPGA DC block filter state (Pro only).
+ * @param[out] enabled current state
+ * @return @ref HACKRF_SUCCESS on success or @ref hackrf_error variant
+ */
+extern ADDAPI int ADDCALL hackrf_get_dc_block(hackrf_device* device, bool* const enabled);
+
+/**
+ * Set RX decimation ratio to 2^log2_ratio in the FPGA (Pro only).
+ * @param log2_ratio 0..5 (ratio 1, 2, 4, 8, 16 or 32)
+ * @return @ref HACKRF_SUCCESS on success, @ref HACKRF_ERROR_INVALID_PARAM on bad ratio
+ */
+extern ADDAPI int ADDCALL hackrf_set_rx_decimation(
+	hackrf_device* device,
+	const uint8_t log2_ratio);
+
+/**
+ * Read the applied RX decimation ratio (Pro only).
+ * @param[out] log2_ratio applied ratio as log2
+ * @return @ref HACKRF_SUCCESS on success or @ref hackrf_error variant
+ */
+extern ADDAPI int ADDCALL hackrf_get_rx_decimation(
+	hackrf_device* device,
+	uint8_t* const log2_ratio);
+
+/**
+ * Set TX interpolation ratio to 2^log2_ratio in the FPGA (Pro only).
+ * @param log2_ratio 0..3 (ratio 1, 2, 4 or 8)
+ * @return @ref HACKRF_SUCCESS on success, @ref HACKRF_ERROR_INVALID_PARAM on bad ratio
+ */
+extern ADDAPI int ADDCALL hackrf_set_tx_interpolation(
+	hackrf_device* device,
+	const uint8_t log2_ratio);
+
+/**
+ * Read the applied TX interpolation ratio (Pro only).
+ * @param[out] log2_ratio applied ratio as log2
+ * @return @ref HACKRF_SUCCESS on success or @ref hackrf_error variant
+ */
+extern ADDAPI int ADDCALL hackrf_get_tx_interpolation(
+	hackrf_device* device,
+	uint8_t* const log2_ratio);
+
+/**
+ * Set the digital quarter-sample-rate (Fs/4) spectrum shift (Pro only).
+ * @param mode @ref hackrf_quarter_shift_mode
+ * @return @ref HACKRF_SUCCESS on success or @ref hackrf_error variant
+ */
+extern ADDAPI int ADDCALL hackrf_set_quarter_shift(hackrf_device* device, const uint8_t mode);
+
+/**
+ * Read the applied quarter-shift mode (Pro only).
+ * @param[out] mode @ref hackrf_quarter_shift_mode
+ * @return @ref HACKRF_SUCCESS on success or @ref hackrf_error variant
+ */
+extern ADDAPI int ADDCALL hackrf_get_quarter_shift(hackrf_device* device, uint8_t* const mode);
+
+/**
+ * Set the reference clock correction factor (Pro only, firmware USB API
+ * 0x0113+).  Applies a fine frequency trim to the whole LO/IF/AFE chain.
+ * @param ppm correction in parts per million, limited to +-10000 (+-1%)
+ * @return @ref HACKRF_SUCCESS on success or @ref hackrf_error variant
+ */
+extern ADDAPI int ADDCALL hackrf_set_clock_correction(hackrf_device* device, const double ppm);
+
+/**
+ * Read the applied reference clock correction (Pro only).
+ * @param[out] ppm applied correction in parts per million
+ * @return @ref HACKRF_SUCCESS on success or @ref hackrf_error variant
+ */
+extern ADDAPI int ADDCALL hackrf_get_clock_correction(hackrf_device* device, double* const ppm);
+
+/**
+ * Set the TX NCO offset frequency (Pro only).
+ *
+ * The offset is applied digitally in the FPGA DAC path and does not
+ * participate in the analog tuning plan: f_actual = f_tuned + f_nco.
+ * The reachable range at the current DAC clock is about +-dac_clk/4
+ * (8-bit phase step: f_nco = pstep * dac_clk / 1024); out-of-range
+ * requests leave the previous setting untouched.  0 disables the NCO.
+ *
+ * Requires USB API version 0x0115 or above!
+ * @param freq_hz offset in Hz, 0 to disable
+ * @return @ref HACKRF_SUCCESS on success, @ref HACKRF_ERROR_USB_API_VERSION
+ *         if the firmware is too old, or another @ref hackrf_error variant
+ */
+extern ADDAPI int ADDCALL hackrf_set_tx_nco(hackrf_device* device, const int64_t freq_hz);
+
+/**
+ * Read the applied TX NCO offset frequency (Pro only).
+ *
+ * Requires USB API version 0x0115 or above!
+ * @param[out] freq_hz applied offset in Hz, 0 if disabled
+ * @return @ref HACKRF_SUCCESS on success or @ref hackrf_error variant
+ */
+extern ADDAPI int ADDCALL hackrf_get_tx_nco(hackrf_device* device, int64_t* const freq_hz);
+
+/** @} */ // defgroup pro_fpga
 
 #ifdef __cplusplus
 } // __cplusplus defined.

@@ -91,5 +91,10 @@ bool fpga_spi_selftest(void);
 bool fpga_sgpio_selftest(void);
 bool fpga_if_xcvr_selftest(void);
 
+/* Index of the gateware image most recently loaded into the FPGA
+ * (0 = standard, 1 = half-precision, 2 = ext-precision RX, 3 = ext-precision TX).
+ * Updated by fpga_image_load() on success. */
+extern unsigned int fpga_image_current_index;
+
 /* Driver instance. */
 extern fpga_driver_t fpga;

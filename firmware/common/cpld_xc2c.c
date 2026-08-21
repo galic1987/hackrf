@@ -448,6 +448,17 @@ bool cpld_xc2c64a_jtag_sram_checksum(
 	uint32_t* const crc_value)
 {
 	cpld_xc2c_jtag_reset_and_idle(jtag);
+
+	/* If the CPLD does not answer with a valid IDCODE, the SRAM read
+	 * below would only shift in 0xff garbage.  Report failure instead
+	 * of returning a meaningless CRC. */
+	if (!cpld_xc2c64a_jtag_idcode_ok(jtag)) {
+		cpld_xc2c_jtag_disable(jtag);
+		cpld_xc2c_jtag_bypass(jtag, false);
+		cpld_xc2c_jtag_reset(jtag);
+		return false;
+	}
+
 	cpld_xc2c_jtag_enable(jtag);
 
 	cpld_xc2c_jtag_sram_read(jtag);

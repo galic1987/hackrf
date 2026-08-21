@@ -68,11 +68,16 @@ bool fpga_spi_selftest(void)
 		return false;
 	}
 
-	// Test writing a register and reading it back.
-	uint8_t reg = 6;
-	uint8_t write_value = 0xA5;
+	// Test writing a register and reading it back.  Use register 1
+	// (present in all gateware variants; register 6 does not exist in
+	// the extended-precision gateware).  Preserve the original value:
+	// CTRL bits enable DC block, PRBS and the trigger.
+	uint8_t reg = 1;
+	uint8_t orig_value = ice40_spi_read(&ice40, reg);
+	uint8_t write_value = orig_value ^ 0xA5;
 	ice40_spi_write(&ice40, reg, write_value);
 	uint8_t read_value = ice40_spi_read(&ice40, reg);
+	ice40_spi_write(&ice40, reg, orig_value);
 
 	// Update selftest result.
 	selftest.fpga_spi = (read_value == write_value) ? PASSED : FAILED;

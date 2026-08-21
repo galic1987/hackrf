@@ -73,7 +73,7 @@ radio_error_t radio_reg_write(
 	const radio_register_t reg,
 	const uint64_t value)
 {
-	if (reg > RADIO_NUM_REGS) {
+	if (reg >= RADIO_NUM_REGS) {
 		return RADIO_ERR_INVALID_REGISTER;
 	}
 
@@ -213,12 +213,25 @@ static inline uint8_t compute_resample_log(
 	if (detected_platform() != BOARD_ID_PRALINE) {
 		return 0;
 	}
-	uint8_t n = 0; // resampling ratio is 2**n
-	const uint8_t max_n = 5;
+	/* Legal ratio range depends on the loaded gateware: the
+	 * extended-precision images require a factor of at least 16 (n=4)
+	 * and support up to 128 (n=7); standard gateware allows 1..32. */
+	uint8_t min_n = 0;
+	uint8_t max_n = 5;
+#ifdef IS_PRALINE
+	if ((fpga_image_current_index == 2) || (fpga_image_current_index == 3)) {
+		min_n = 4;
+		max_n = 7;
+	}
+#endif
+	uint8_t n = min_n; // resampling ratio is 2**n
 	fp_28_36_t afe_rate = 0;
 
 	if (requested_n == RADIO_UNSET) {
-		/* Find highest supported resampling ratio of at least 2 (n=1). */
+		/* Find highest supported resampling ratio (at least 2, i.e.
+		 * n=1, on standard gateware; at least 16 on extended precision). */
+		n = min_n;
+		afe_rate = (min_n == 0) ? 0 : (sample_rate << min_n);
 		while (((afe_rate * 2) <= MAX_SUPPORTED_AFE_RATE) && (n < max_n)) {
 			n++;
 			afe_rate = sample_rate << n;
@@ -226,12 +239,13 @@ static inline uint8_t compute_resample_log(
 	} else {
 		/* Restrict requested resampling ratio within allowable limits. */
 		n = MIN(max_n, requested_n);
+		n = MAX(min_n, n);
 		afe_rate = sample_rate << n;
 		while ((afe_rate < ABSOLUTE_MIN_AFE_RATE) && (n < max_n)) {
 			n++;
 			afe_rate <<= 1;
 		}
-		while ((afe_rate > ABSOLUTE_MAX_AFE_RATE) && (n > 0)) {
+		while ((afe_rate > ABSOLUTE_MAX_AFE_RATE) && (n > min_n)) {
 			n--;
 			afe_rate >>= 1;
 		}
@@ -309,6 +323,16 @@ static uint32_t radio_update_sample_rate(radio_t* const radio, uint64_t* bank)
 	new_n = (n != previous_n);
 
 	afe_rate = rate << n;
+#ifdef IS_PRALINE
+	if (IS_PRALINE && (fpga_image_current_index >= 2) &&
+	    (afe_rate > MAX_SUPPORTED_AFE_RATE)) {
+		/* Extended-precision gateware requires n >= 4, so high
+		 * requested MCU rates can overshoot the AFE.  Clamp to the
+		 * fastest supported AFE rate; the applied MCU rate derived
+		 * below then lands on the nearest legal ext-precision rate. */
+		afe_rate = MAX_SUPPORTED_AFE_RATE;
+	}
+#endif
 	afe_rate = set_afe_rate(afe_rate, correction, false);
 	previous_rate = radio->config[RADIO_BANK_APPLIED][RADIO_SAMPLE_RATE];
 	if ((previous_n == RADIO_UNSET) || previous_rate == RADIO_UNSET) {
@@ -926,6 +950,92 @@ static uint32_t radio_update_dc_block(radio_t* const radio, uint64_t* bank)
 	return false;
 }
 
+static uint32_t radio_update_tx_nco(radio_t* const radio, uint64_t* bank)
+{
+#ifdef IS_PRALINE
+	if (IS_PRALINE) {
+		const uint64_t requested = bank[RADIO_TX_NCO];
+		if (requested == RADIO_UNSET) {
+			return 0;
+		}
+
+		const int64_t freq_hz = (int64_t) requested;
+		if (radio->config[RADIO_BANK_APPLIED][RADIO_TX_NCO] == requested) {
+			return 0;
+		}
+
+		if (freq_hz == 0) {
+			fpga_set_tx_nco_enable(&fpga, false);
+			radio->config[RADIO_BANK_APPLIED][RADIO_TX_NCO] = 0;
+			return (1 << RADIO_TX_NCO);
+		}
+
+		/* DAC clock = applied MCU sample rate shifted left by the TX
+		 * resampling ratio (fp_28_36 units).  Compute as a right shift
+		 * to avoid overflowing uint64.  The TX ratio is unset until the
+		 * first transmit; fall back to the RX ratio, which the rate
+		 * solver computes identically. */
+		const uint64_t mcu_rate =
+			radio->config[RADIO_BANK_APPLIED][RADIO_SAMPLE_RATE];
+		uint64_t n = radio->config[RADIO_BANK_APPLIED][RADIO_RESAMPLE_TX];
+		if (n == RADIO_UNSET) {
+			n = radio->config[RADIO_BANK_APPLIED][RADIO_RESAMPLE_RX];
+		}
+		if ((mcu_rate == RADIO_UNSET) || (n == RADIO_UNSET) || (n > 5)) {
+			return 0;
+		}
+		const uint64_t dac_clk_hz = mcu_rate >> (36 - n);
+
+		const int64_t pstep =
+			(freq_hz * 1024 + (int64_t) dac_clk_hz / 2) / (int64_t) dac_clk_hz;
+		if ((pstep < 1) || (pstep > 255)) {
+			/* Offset not reachable at the current DAC clock; leave the
+			 * previous setting untouched. */
+			return 0;
+		}
+
+		fpga_set_tx_nco_pstep(&fpga, (uint8_t) pstep);
+		fpga_set_tx_nco_enable(&fpga, true);
+		radio->config[RADIO_BANK_APPLIED][RADIO_TX_NCO] = requested;
+		return (1 << RADIO_TX_NCO);
+	}
+#endif
+
+	(void) radio;
+	(void) bank;
+	return 0;
+}
+
+#ifdef IS_PRALINE
+/*
+ * Invalidate the applied state of all FPGA-managed registers and re-apply
+ * the requested configuration.  Required after an FPGA bitstream (re)load:
+ * the fresh gateware resets its registers to defaults while the applied
+ * bank still claims the old values are in effect, so no register would be
+ * rewritten on the next radio_update() otherwise.
+ */
+void radio_reapply_fpga_state(radio_t* const radio)
+{
+	if (!IS_PRALINE) {
+		return;
+	}
+
+	radio->config[RADIO_BANK_APPLIED][RADIO_RESAMPLE_RX] = RADIO_UNSET;
+	radio->config[RADIO_BANK_APPLIED][RADIO_RESAMPLE_TX] = RADIO_UNSET;
+	radio->config[RADIO_BANK_APPLIED][RADIO_ROTATION] = RADIO_UNSET;
+	radio->config[RADIO_BANK_APPLIED][RADIO_DC_BLOCK] = RADIO_UNSET;
+	radio->config[RADIO_BANK_APPLIED][RADIO_TRIGGER] = RADIO_UNSET;
+
+	mark_dirty(radio, RADIO_RESAMPLE_RX);
+	mark_dirty(radio, RADIO_RESAMPLE_TX);
+	mark_dirty(radio, RADIO_ROTATION);
+	mark_dirty(radio, RADIO_DC_BLOCK);
+	mark_dirty(radio, RADIO_TRIGGER);
+
+	radio_update(radio);
+}
+#endif
+
 bool radio_update(radio_t* const radio)
 {
 	uint64_t tmp_bank[RADIO_NUM_REGS];
@@ -966,6 +1076,9 @@ bool radio_update(radio_t* const radio)
 	}
 	if (dirty & (1 << RADIO_DC_BLOCK)) {
 		changed |= radio_update_dc_block(radio, &tmp_bank[0]);
+	}
+	if (dirty & (1 << RADIO_TX_NCO)) {
+		changed |= radio_update_tx_nco(radio, &tmp_bank[0]);
 	}
 	if (dirty & (1 << RADIO_OPMODE)) {
 		changed |= radio_update_direction(radio, &tmp_bank[0]);

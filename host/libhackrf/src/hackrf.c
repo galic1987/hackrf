@@ -55,7 +55,6 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 #endif
 
 #define DEFAULT_REQUEST_TIMEOUT 100
-#define FPGA_BITSTREAM_TIMEOUT  1000
 #define CPLD_WRITE_TIMEOUT      10000
 #define SPIFLASH_WRITE_TIMEOUT  50000 // W25Q32JV max chip erase time
 #define FPGA_BITSTREAM_TIMEOUT  500
@@ -2512,38 +2511,30 @@ int ADDCALL hackrf_close(hackrf_device* device)
 {
 	int result1, result2;
 
-	result1 = HACKRF_SUCCESS;
-	result2 = HACKRF_SUCCESS;
-
-	if (device != NULL) {
-		/* Prevent double-close: if usb_device is already NULL,
-		 * the device has been closed or never fully opened. */
-		if (device->usb_device == NULL) {
-			free(device);
-			open_devices--;
-			return HACKRF_SUCCESS;
-		}
-		result1 = hackrf_stop_cmd(device);
-
-		/*
-		 * Finally kill the transfer thread, which will
-		 * also cancel any pending transmit/receive transfers.
-		 */
-		result2 = kill_transfer_thread(device);
-		if (device->usb_device != NULL) {
-			libusb_release_interface(device->usb_device, 0);
-			libusb_close(device->usb_device);
-			device->usb_device = NULL;
-		}
-
-		free_transfers(device);
-
-		pthread_mutex_destroy(&device->transfer_lock);
-		pthread_cond_destroy(&device->all_finished_cv);
-
-		free(device);
-		open_devices--;
+	if (device == NULL) {
+		return HACKRF_ERROR_INVALID_PARAM;
 	}
+
+	result1 = hackrf_stop_cmd(device);
+
+	/*
+	 * Finally kill the transfer thread, which will
+	 * also cancel any pending transmit/receive transfers.
+	 */
+	result2 = kill_transfer_thread(device);
+	if (device->usb_device != NULL) {
+		libusb_release_interface(device->usb_device, 0);
+		libusb_close(device->usb_device);
+		device->usb_device = NULL;
+	}
+
+	free_transfers(device);
+
+	pthread_mutex_destroy(&device->transfer_lock);
+	pthread_cond_destroy(&device->all_finished_cv);
+
+	free(device);
+	open_devices--;
 
 	if (result2 != HACKRF_SUCCESS) {
 		return result2;
@@ -2765,7 +2756,7 @@ int ADDCALL hackrf_sync_start(hackrf_device* device, const uint8_t mode)
 		return HACKRF_ERROR_INVALID_PARAM;
 	}
 
-	USB_API_REQUIRED(device, 0x0113)
+	USB_API_REQUIRED(device, 0x0114)
 
 	if (mode != HACKRF_TRANSCEIVER_MODE_OFF &&
 	    mode != HACKRF_TRANSCEIVER_MODE_RECEIVE &&
@@ -3684,6 +3675,257 @@ int ADDCALL hackrf_radio_write_register(
 	} else {
 		return HACKRF_SUCCESS;
 	}
+}
+
+/*
+ * HackRF Pro FPGA feature helpers.
+ *
+ * Thin wrappers over the radio register interface for the Pro's gateware
+ * DSP features.  Unlike raw hackrf_fpga_write_register() pokes, settings
+ * made through these survive sample-rate and frequency changes because the
+ * firmware's radio configuration management owns the gateware registers.
+ */
+
+#define HACKRF_RADIO_REG_ROTATION         5
+#define HACKRF_RADIO_REG_RESAMPLE_TX      7
+#define HACKRF_RADIO_REG_RESAMPLE_RX      8
+#define HACKRF_RADIO_REG_DC_BLOCK         22
+#define HACKRF_RADIO_REG_CLOCK_CORRECTION 23
+#define HACKRF_RADIO_REG_TX_NCO           24
+
+#define HACKRF_RADIO_BANK_APPLIED 0
+#define HACKRF_RADIO_BANK_ALL     255
+
+/* Quarter-shift encodings in RADIO_ROTATION (top two bits, tau/(2**32)). */
+#define HACKRF_ROTATION_DOWN 0x40000000ULL
+#define HACKRF_ROTATION_UP   0xC0000000ULL
+
+/* fp_1_63 fixed-point one, as used by RADIO_CLOCK_CORRECTION. */
+#define HACKRF_FP_1_63_ONE 9223372036854775808.0
+
+int ADDCALL hackrf_set_dc_block(hackrf_device* device, const bool enable)
+{
+	if (device == NULL) {
+		return HACKRF_ERROR_INVALID_PARAM;
+	}
+	return hackrf_radio_write_register(
+		device,
+		HACKRF_RADIO_BANK_ALL,
+		HACKRF_RADIO_REG_DC_BLOCK,
+		enable ? 1 : 0);
+}
+
+int ADDCALL hackrf_get_dc_block(hackrf_device* device, bool* const enabled)
+{
+	if ((device == NULL) || (enabled == NULL)) {
+		return HACKRF_ERROR_INVALID_PARAM;
+	}
+	uint64_t value;
+	const int result = hackrf_radio_read_register(
+		device,
+		HACKRF_RADIO_BANK_APPLIED,
+		HACKRF_RADIO_REG_DC_BLOCK,
+		&value);
+	if (result != HACKRF_SUCCESS) {
+		return result;
+	}
+	*enabled = (value == 1);
+	return HACKRF_SUCCESS;
+}
+
+int ADDCALL hackrf_set_rx_decimation(hackrf_device* device, const uint8_t log2_ratio)
+{
+	if (device == NULL) {
+		return HACKRF_ERROR_INVALID_PARAM;
+	}
+	if (log2_ratio > 5) {
+		return HACKRF_ERROR_INVALID_PARAM;
+	}
+	return hackrf_radio_write_register(
+		device,
+		HACKRF_RADIO_BANK_ALL,
+		HACKRF_RADIO_REG_RESAMPLE_RX,
+		log2_ratio);
+}
+
+int ADDCALL hackrf_get_rx_decimation(hackrf_device* device, uint8_t* const log2_ratio)
+{
+	if ((device == NULL) || (log2_ratio == NULL)) {
+		return HACKRF_ERROR_INVALID_PARAM;
+	}
+	uint64_t value;
+	const int result = hackrf_radio_read_register(
+		device,
+		HACKRF_RADIO_BANK_APPLIED,
+		HACKRF_RADIO_REG_RESAMPLE_RX,
+		&value);
+	if (result != HACKRF_SUCCESS) {
+		return result;
+	}
+	if (value > 5) {
+		return HACKRF_ERROR_NOT_FOUND;
+	}
+	*log2_ratio = (uint8_t) value;
+	return HACKRF_SUCCESS;
+}
+
+int ADDCALL hackrf_set_tx_interpolation(hackrf_device* device, const uint8_t log2_ratio)
+{
+	if (device == NULL) {
+		return HACKRF_ERROR_INVALID_PARAM;
+	}
+	if (log2_ratio > 3) {
+		return HACKRF_ERROR_INVALID_PARAM;
+	}
+	return hackrf_radio_write_register(
+		device,
+		HACKRF_RADIO_BANK_ALL,
+		HACKRF_RADIO_REG_RESAMPLE_TX,
+		log2_ratio);
+}
+
+int ADDCALL hackrf_get_tx_interpolation(hackrf_device* device, uint8_t* const log2_ratio)
+{
+	if ((device == NULL) || (log2_ratio == NULL)) {
+		return HACKRF_ERROR_INVALID_PARAM;
+	}
+	uint64_t value;
+	const int result = hackrf_radio_read_register(
+		device,
+		HACKRF_RADIO_BANK_APPLIED,
+		HACKRF_RADIO_REG_RESAMPLE_TX,
+		&value);
+	if (result != HACKRF_SUCCESS) {
+		return result;
+	}
+	if (value > 3) {
+		return HACKRF_ERROR_NOT_FOUND;
+	}
+	*log2_ratio = (uint8_t) value;
+	return HACKRF_SUCCESS;
+}
+
+int ADDCALL hackrf_set_quarter_shift(hackrf_device* device, const uint8_t mode)
+{
+	if (device == NULL) {
+		return HACKRF_ERROR_INVALID_PARAM;
+	}
+	uint64_t value;
+	switch (mode) {
+	case HACKRF_QUARTER_SHIFT_NONE:
+		value = 0;
+		break;
+	case HACKRF_QUARTER_SHIFT_DOWN:
+		value = HACKRF_ROTATION_DOWN;
+		break;
+	case HACKRF_QUARTER_SHIFT_UP:
+		value = HACKRF_ROTATION_UP;
+		break;
+	default:
+		return HACKRF_ERROR_INVALID_PARAM;
+	}
+	return hackrf_radio_write_register(
+		device,
+		HACKRF_RADIO_BANK_ALL,
+		HACKRF_RADIO_REG_ROTATION,
+		value);
+}
+
+int ADDCALL hackrf_get_quarter_shift(hackrf_device* device, uint8_t* const mode)
+{
+	if ((device == NULL) || (mode == NULL)) {
+		return HACKRF_ERROR_INVALID_PARAM;
+	}
+	uint64_t value;
+	const int result = hackrf_radio_read_register(
+		device,
+		HACKRF_RADIO_BANK_APPLIED,
+		HACKRF_RADIO_REG_ROTATION,
+		&value);
+	if (result != HACKRF_SUCCESS) {
+		return result;
+	}
+	switch (value >> 30) {
+	case 0:
+	case 2: /* 0x80000000 is rounded to "none" by the firmware */
+		*mode = HACKRF_QUARTER_SHIFT_NONE;
+		break;
+	case 1:
+		*mode = HACKRF_QUARTER_SHIFT_DOWN;
+		break;
+	default:
+		*mode = HACKRF_QUARTER_SHIFT_UP;
+		break;
+	}
+	return HACKRF_SUCCESS;
+}
+
+int ADDCALL hackrf_set_clock_correction(hackrf_device* device, const double ppm)
+{
+	if (device == NULL) {
+		return HACKRF_ERROR_INVALID_PARAM;
+	}
+	/* Firmware restricts the correction to +-1%. */
+	if ((ppm < -10000.0) || (ppm > 10000.0)) {
+		return HACKRF_ERROR_INVALID_PARAM;
+	}
+	const uint64_t value = (uint64_t) ((1.0 + ppm / 1e6) * HACKRF_FP_1_63_ONE);
+	return hackrf_radio_write_register(
+		device,
+		HACKRF_RADIO_BANK_ALL,
+		HACKRF_RADIO_REG_CLOCK_CORRECTION,
+		value);
+}
+
+int ADDCALL hackrf_get_clock_correction(hackrf_device* device, double* const ppm)
+{
+	if ((device == NULL) || (ppm == NULL)) {
+		return HACKRF_ERROR_INVALID_PARAM;
+	}
+	uint64_t value;
+	const int result = hackrf_radio_read_register(
+		device,
+		HACKRF_RADIO_BANK_APPLIED,
+		HACKRF_RADIO_REG_CLOCK_CORRECTION,
+		&value);
+	if (result != HACKRF_SUCCESS) {
+		return result;
+	}
+	*ppm = ((double) value / HACKRF_FP_1_63_ONE - 1.0) * 1e6;
+	return HACKRF_SUCCESS;
+}
+
+int ADDCALL hackrf_set_tx_nco(hackrf_device* device, const int64_t freq_hz)
+{
+	if (device == NULL) {
+		return HACKRF_ERROR_INVALID_PARAM;
+	}
+	USB_API_REQUIRED(device, 0x0115)
+	return hackrf_radio_write_register(
+		device,
+		HACKRF_RADIO_BANK_ALL,
+		HACKRF_RADIO_REG_TX_NCO,
+		(uint64_t) freq_hz);
+}
+
+int ADDCALL hackrf_get_tx_nco(hackrf_device* device, int64_t* const freq_hz)
+{
+	if ((device == NULL) || (freq_hz == NULL)) {
+		return HACKRF_ERROR_INVALID_PARAM;
+	}
+	USB_API_REQUIRED(device, 0x0115)
+	uint64_t value;
+	const int result = hackrf_radio_read_register(
+		device,
+		HACKRF_RADIO_BANK_APPLIED,
+		HACKRF_RADIO_REG_TX_NCO,
+		&value);
+	if (result != HACKRF_SUCCESS) {
+		return result;
+	}
+	/* RADIO_UNSET means the NCO has never been configured: report disabled. */
+	*freq_hz = (value == UINT64_MAX) ? 0 : (int64_t) value;
+	return HACKRF_SUCCESS;
 }
 
 #ifdef __cplusplus

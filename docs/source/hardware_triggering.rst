@@ -65,12 +65,23 @@ device or when exact sample-level alignment is not required.
 Requirements
 ^^^^^^^^^^^^
 
-* **Firmware USB API version ≥ 0x0113.**  Run ``hackrf_info`` and verify that
-the ``API`` field for each device is at least ``1.13``.
+* **Firmware USB API version ≥ 0x0114.**  Run ``hackrf_info`` and verify that
+the ``API`` field for each device is at least ``1.14``.
 * **Sweep mode is NOT supported.**  ``hackrf_sync_start()`` works with
 standard RX and TX streaming only.  If you need frequency sweep with
 triggered start, use the existing ``hackrf_transfer -H`` sweep support
 instead.
+
+Trigger disarm
+^^^^^^^^^^^^^^
+
+Calling ``hackrf_sync_start()`` with mode RX or TX arms the hardware
+trigger, and the trigger stays armed until it fires or is explicitly
+disarmed.  To return a device to normal (untriggered) operation, call
+``hackrf_sync_start()`` with mode OFF, which disarms the trigger, or call
+``hackrf_set_hw_sync_mode(0)``.  If a device appears to hang in
+``hackrf_start_rx()`` after an earlier synchronized session, a stale armed
+trigger is the likely cause.
 
 Hardware prerequisites
 ^^^^^^^^^^^^^^^^^^^^^^

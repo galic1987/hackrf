@@ -56,7 +56,11 @@ usb_request_status_t usb_vendor_request_sync_start(
 		}
 
 		if (mode != TRANSCEIVER_MODE_OFF) {
-			radio_reg_write(&radio, RADIO_BANK_ACTIVE, RADIO_TRIGGER, 1);
+			radio_reg_write(&radio, RADIO_BANK_REQUESTED, RADIO_TRIGGER, 1);
+		} else {
+			/* Disarm the trigger so that a subsequent plain
+			 * start_rx/start_tx does not wait for a trigger edge. */
+			radio_reg_write(&radio, RADIO_BANK_REQUESTED, RADIO_TRIGGER, 0);
 		}
 		request_transceiver_mode(mode);
 
