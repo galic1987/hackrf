@@ -1206,3 +1206,18 @@ git commit -m "add --ext16: extended-precision (12-bit in int16) capture/analysi
 - Spec coverage: gateware module (Task 2), integration (Task 3), firmware register + API bump (Task 4), host API + CLI (Task 5), unit tests (Task 6), HIL incl. live-tone and GPS comparison (Task 7), toolchain + build flow (Tasks 1, 4, 7). All spec sections covered.
 - Type consistency: `hackrf_set_rx_notch(hackrf_device*, int64_t)` used identically in Tasks 5, 6, 7. `RADIO_RX_NOTCH = 25` / `HACKRF_RADIO_REG_RX_NOTCH 25` consistent. SPI regs 0x07-0x0A consistent between Tasks 3, 4, 7.
 - Deferred-at-build items with explicit stop conditions: `ESTIMATE_DELAY` tuning (Task 2 Step 4), resource overflow (Task 3 Step 2).
+
+---
+
+## Execution notes (2026-08-21, filled in during implementation)
+
+What actually happened, for future reference:
+
+- **Toolchain**: oss-cad-suite 2026-08-21 + venv on Python 3.12 (system python3 is 3.9 — too old, `match` statements in dsp/fir.py require ≥3.10). `pytest` must be pip-installed into the venv (not in requirements.txt).
+- **Amaranth 0.5 gotchas hit**: `sim.add_testbench()` (not `add_process`) for async benches, and `sim.add_clock()` is mandatory — without it the sim hangs silently forever.
+- **First notch implementation used LUT multipliers**: 128% LC over-budget on standard, 143% on ext_precision_rx. The UP5K's 8 SB_MAC16 blocks are completely unused by the stock standard image — the redesign runs all 8 notch multiplies on them via the repo's `iCE40Multiplier` (dsp/fir_mac16.py), dropping the notch to ~700 LCs. Standard image with notch: 95% (fits).
+- **Pipeline alignment was calibrated by sim sweep**: phase misalignment produces exactly the 20·log10|1−e^{jkΔφ}| series (−18/−12/−8.5/−6 dB per sample of error at Δφ=0.126); final: clean-path delay 10, mix-up NCO delay 4 (xd−cd=6).
+- **Suppression ceiling**: 34.7 dB in sim; the test's own int8-quantized tone caps measurement at ~41 dB. Sufficient: the real tone is ~34-44 dB above the noise floor.
+- **ext_precision_rx notch deferred**: the ext image already spends its MAC16s on FIR decimators and is LUT-heavy (94% stock); the notch pushes it to 143%. Needs a v2 that shares/time-multiplexes MACs with the decimators. `top/ext_precision_rx.py` wiring was reverted; `dsp/notch.py` is image-agnostic and ready.
+- **Firmware gotcha**: `FPGA_NUM_REGS` was 7; the new regs 7-10 required growing it to 11 (caught by -Warray-bounds).
+- **libopencm3 stale .d files** in the repo's submodule reference a dead toolchain path (`~/hackrf/toolchain/...`); they were deleted. If the firmware build fails with "No rule to make target .../stdint.h", `find firmware/libopencm3 -name "*.d" -delete`.
