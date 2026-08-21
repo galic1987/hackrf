@@ -31,12 +31,6 @@
 #include "platform_gpio.h"
 #include "platform_scu.h"
 
-static void portapack_sleep_milliseconds(const uint32_t milliseconds)
-{
-	/* NOTE: Naively assumes 204 MHz instruction cycle clock and five instructions per count */
-	delay(milliseconds * 40800);
-}
-
 typedef struct {
 	gpio_t gpio_dir;
 	gpio_t gpio_lcd_rdx;
@@ -244,7 +238,7 @@ static void portapack_lcd_sleep_out(void)
 	// "It will be necessary to wait 120msec after sending Sleep Out
 	// command (when in Sleep In Mode) before Sleep In command can be
 	// sent."
-	portapack_sleep_milliseconds(120);
+	delay_ms(120);
 }
 
 static void portapack_lcd_display_on(void)
@@ -310,11 +304,11 @@ static void portapack_lcd_wake(void)
 static void portapack_lcd_reset(void)
 {
 	portapack_lcd_reset_state(false);
-	portapack_sleep_milliseconds(1);
+	delay_ms(1);
 	portapack_lcd_reset_state(true);
-	portapack_sleep_milliseconds(10);
+	delay_ms(10);
 	portapack_lcd_reset_state(false);
-	portapack_sleep_milliseconds(120);
+	delay_ms(120);
 }
 
 static void portapack_lcd_init(void)
@@ -616,23 +610,23 @@ static bool portapack_detect(void)
 	return idcode == 0x020A50DD || idcode == 0x00025610;
 }
 
-static const portapack_t portapack_instance = {};
+static bool portapack_detected = false;
 
-static const portapack_t* portapack_pointer = NULL;
-
-const portapack_t* portapack(void)
+bool portapack_present(void)
 {
-	return portapack_pointer;
+	return portapack_detected;
 }
 
-void portapack_init(void)
+bool portapack_init(void)
 {
 	if (portapack_detect()) {
 		portapack_if_init();
 		portapack_lcd_reset();
 		portapack_lcd_init();
-		portapack_pointer = &portapack_instance;
+		portapack_detected = true;
 	} else {
-		portapack_pointer = NULL;
+		portapack_detected = false;
 	}
+
+	return portapack_detected;
 }

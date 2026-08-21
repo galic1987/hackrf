@@ -58,6 +58,7 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 #define FPGA_BITSTREAM_TIMEOUT  1000
 #define CPLD_WRITE_TIMEOUT      10000
 #define SPIFLASH_WRITE_TIMEOUT  50000 // W25Q32JV max chip erase time
+#define FPGA_BITSTREAM_TIMEOUT  500
 
 // TODO: Factor this into a shared #include so that firmware can use
 // the same values.

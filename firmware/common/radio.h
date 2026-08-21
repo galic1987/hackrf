@@ -165,17 +165,23 @@ typedef enum {
 	 * DC block enable of type bool.
 	 */
 	RADIO_DC_BLOCK = 22,
+	/**
+	 * Correction factor for radio reference clock, of type fp_1_63_t.
+	 */
+	RADIO_CLOCK_CORRECTION = 23,
 } radio_register_t;
 
-#define RADIO_NUM_REGS (23)
+#define RADIO_NUM_REGS (24)
 #define RADIO_UNSET    (0xffffffffffffffff)
 
 /* register groups for bitfield convenience */
-#define RADIO_REG_GROUP_RATE \
-	((1 << RADIO_SAMPLE_RATE) | (1 << RADIO_RESAMPLE_TX) | (1 << RADIO_RESAMPLE_RX))
-#define RADIO_REG_GROUP_FREQ                                     \
-	((1 << RADIO_FREQUENCY_RF) | (1 << RADIO_FREQUENCY_IF) | \
-	 (1 << RADIO_FREQUENCY_LO) | (1 << RADIO_IMAGE_REJECT) | (1 << RADIO_ROTATION))
+#define RADIO_REG_GROUP_RATE                                   \
+	((1 << RADIO_SAMPLE_RATE) | (1 << RADIO_RESAMPLE_TX) | \
+	 (1 << RADIO_RESAMPLE_RX) | (1 << RADIO_CLOCK_CORRECTION))
+#define RADIO_REG_GROUP_FREQ                                                             \
+	((1 << RADIO_FREQUENCY_RF) | (1 << RADIO_FREQUENCY_IF) |                         \
+	 (1 << RADIO_FREQUENCY_LO) | (1 << RADIO_IMAGE_REJECT) | (1 << RADIO_ROTATION) | \
+	 (1 << RADIO_CLOCK_CORRECTION))
 #define RADIO_REG_GROUP_BW                                             \
 	((1 << RADIO_BB_BANDWIDTH_TX) | (1 << RADIO_BB_BANDWIDTH_RX) | \
 	 (1 << RADIO_XCVR_TX_LPF) | (1 << RADIO_XCVR_RX_LPF) |         \
@@ -185,7 +191,7 @@ typedef enum {
 	 (1 << RADIO_GAIN_RX_IF) | (1 << RADIO_GAIN_RX_BB))
 
 /**
- * Register bank RADIO_BANK_ACTIVE stores the active configuration. Active
+ * Register bank RADIO_BANK_REQUESTED stores the active configuration. Active
  * register settings are copied to the applied register when applied.
  *
  * The other three banks store settings that will be applied when switching to
@@ -196,7 +202,7 @@ typedef enum {
  */
 typedef enum {
 	RADIO_BANK_APPLIED = 0,
-	RADIO_BANK_ACTIVE = 1,
+	RADIO_BANK_REQUESTED = 1,
 	RADIO_BANK_IDLE = 2,
 	RADIO_BANK_RX = 3,
 	RADIO_BANK_TX = 4,
@@ -231,7 +237,7 @@ typedef struct {
 void radio_init(radio_t* const radio);
 
 /**
- * Write to one or more registers. Writes to RADIO_BANK_ACTIVE are applied at
+ * Write to one or more registers. Writes to RADIO_BANK_REQUESTED are applied at
  * the next radio_update(). Writes to RADIO_BANK_APPLIED are not supported.
  */
 radio_error_t radio_reg_write(
@@ -249,7 +255,7 @@ uint64_t radio_reg_read(
 	const radio_register_t reg);
 
 /**
- * Apply changes requested in RADIO_BANK_ACTIVE.
+ * Apply changes requested in RADIO_BANK_REQUESTED.
  * Return true if any changes were applied.
  */
 bool radio_update(radio_t* const radio);
