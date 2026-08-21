@@ -34,6 +34,7 @@ static void usage()
 	printf("\t[--nco-freq HZ] # TX NCO offset in Hz (0 disables). Firmware computes\n");
 	printf("\t                 # the phase step from the actual DAC clock.\n");
 	printf("\t[--clock-corr PPM] # Reference clock correction in PPM (±10000).\n");
+	printf("\t[--rx-notch HZ] # RX notch filter tone offset in Hz from LO (0 disables).\n");
 	printf("\t[--read-reg ADDR] # Read raw FPGA register (debug; bypasses radio management).\n");
 	printf("\t[--write-reg ADDR VAL] # Write raw FPGA register (debug; bypasses radio management).\n");
 	printf("\t[-h] # This help.\n");
@@ -100,6 +101,8 @@ int main(int argc, char** argv)
 	uint8_t quarter_shift = 0;
 	bool do_nco = false;
 	int64_t nco_freq = 0;
+	bool do_rx_notch = false;
+	int64_t rx_notch = 0;
 	bool do_clock_corr = false;
 	double clock_corr = 0.0;
 	bool do_read_reg = false;
@@ -117,6 +120,7 @@ int main(int argc, char** argv)
 		{"read-reg", required_argument, 0, 6},
 		{"write-reg", required_argument, 0, 7},
 		{"clock-corr", required_argument, 0, 8},
+		{"rx-notch", required_argument, 0, 9},
 		{"device", required_argument, 0, 'd'},
 		{"help", no_argument, 0, 'h'},
 		{0, 0, 0, 0},
@@ -158,6 +162,10 @@ int main(int argc, char** argv)
 		case 8:
 			clock_corr = strtod(optarg, NULL);
 			do_clock_corr = true;
+			break;
+		case 9:
+			rx_notch = strtoll(optarg, NULL, 10);
+			do_rx_notch = true;
 			break;
 		case 'd':
 			serial_number = optarg;
@@ -281,6 +289,22 @@ int main(int argc, char** argv)
 			hackrf_get_tx_nco(device, &applied);
 			printf("TX NCO offset set to %lld Hz (applied: %lld Hz)\n",
 			       (long long) nco_freq,
+			       (long long) applied);
+		}
+	}
+
+	if (do_rx_notch) {
+		result = hackrf_set_rx_notch(device, rx_notch);
+		if (result != HACKRF_SUCCESS) {
+			fprintf(stderr,
+				"RX notch failed: %s (%d)\n",
+				hackrf_error_name(result),
+				result);
+		} else {
+			int64_t applied = 0;
+			hackrf_get_rx_notch(device, &applied);
+			printf("RX notch set to %lld Hz (applied: %lld Hz)\n",
+			       (long long) rx_notch,
 			       (long long) applied);
 		}
 	}

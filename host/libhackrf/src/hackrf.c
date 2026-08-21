@@ -3692,6 +3692,7 @@ int ADDCALL hackrf_radio_write_register(
 #define HACKRF_RADIO_REG_DC_BLOCK         22
 #define HACKRF_RADIO_REG_CLOCK_CORRECTION 23
 #define HACKRF_RADIO_REG_TX_NCO           24
+#define HACKRF_RADIO_REG_RX_NOTCH         25
 
 #define HACKRF_RADIO_BANK_APPLIED 0
 #define HACKRF_RADIO_BANK_ALL     255
@@ -3924,6 +3925,39 @@ int ADDCALL hackrf_get_tx_nco(hackrf_device* device, int64_t* const freq_hz)
 		return result;
 	}
 	/* RADIO_UNSET means the NCO has never been configured: report disabled. */
+	*freq_hz = (value == UINT64_MAX) ? 0 : (int64_t) value;
+	return HACKRF_SUCCESS;
+}
+
+int ADDCALL hackrf_set_rx_notch(hackrf_device* device, const int64_t freq_hz)
+{
+	if (device == NULL) {
+		return HACKRF_ERROR_INVALID_PARAM;
+	}
+	USB_API_REQUIRED(device, 0x0116)
+	return hackrf_radio_write_register(
+		device,
+		HACKRF_RADIO_BANK_ALL,
+		HACKRF_RADIO_REG_RX_NOTCH,
+		(uint64_t) freq_hz);
+}
+
+int ADDCALL hackrf_get_rx_notch(hackrf_device* device, int64_t* const freq_hz)
+{
+	if ((device == NULL) || (freq_hz == NULL)) {
+		return HACKRF_ERROR_INVALID_PARAM;
+	}
+	USB_API_REQUIRED(device, 0x0116)
+	uint64_t value;
+	const int result = hackrf_radio_read_register(
+		device,
+		HACKRF_RADIO_BANK_APPLIED,
+		HACKRF_RADIO_REG_RX_NOTCH,
+		&value);
+	if (result != HACKRF_SUCCESS) {
+		return result;
+	}
+	/* RADIO_UNSET means the notch has never been configured: report disabled. */
 	*freq_hz = (value == UINT64_MAX) ? 0 : (int64_t) value;
 	return HACKRF_SUCCESS;
 }

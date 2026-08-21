@@ -90,7 +90,7 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
  * # USB API versions
  * As all functionality of HackRF devices requires cooperation between the firmware and the host, both devices can have outdated software. If host machine software is outdated, the new functions will be unavailable in `hackrf.h`, causing linking errors. If the device firmware is outdated, the functions will return @ref HACKRF_ERROR_USB_API_VERSION.
  * Since device firmware and USB API are separate (but closely related), USB API has its own version numbers.
- * Here is a list of all the functions that require a certain minimum USB API version, up to version 0x0115
+ * Here is a list of all the functions that require a certain minimum USB API version, up to version 0x0116
  * ## 0x0102
  * - @ref hackrf_set_hw_sync_mode
  * - @ref hackrf_init_sweep
@@ -155,6 +155,9 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
  * ## 0x0115
  * - @ref hackrf_set_tx_nco
  * - @ref hackrf_get_tx_nco
+ * ## 0x0116
+ * - @ref hackrf_set_rx_notch
+ * - @ref hackrf_get_rx_notch
  */
 
 /**
@@ -2586,6 +2589,33 @@ extern ADDAPI int ADDCALL hackrf_set_tx_nco(hackrf_device* device, const int64_t
  * @return @ref HACKRF_SUCCESS on success or @ref hackrf_error variant
  */
 extern ADDAPI int ADDCALL hackrf_get_tx_nco(hackrf_device* device, int64_t* const freq_hz);
+
+/**
+ * Set the RX notch filter tone offset (Pro only).
+ *
+ * Programs the FPGA to suppress a narrowband tone at freq_hz relative to
+ * the current LO (negative = below LO).  The setting persists across
+ * RX/TX/OFF switches and is re-applied if the sample rate changes.
+ * 0 disables the notch.
+ *
+ * Requires USB API version 0x0116 or above!
+ * @param freq_hz tone offset from the LO in Hz, 0 to disable
+ * @return @ref HACKRF_SUCCESS on success, @ref HACKRF_ERROR_USB_API_VERSION
+ *         if the firmware is too old, or another @ref hackrf_error variant
+ */
+extern ADDAPI int ADDCALL hackrf_set_rx_notch(hackrf_device* device, const int64_t freq_hz);
+
+/**
+ * Read the applied RX notch filter tone offset (Pro only).
+ *
+ * Reads the applied configuration bank: the returned value is in effect
+ * only while receiving.  0 means the notch is disabled or never configured.
+ *
+ * Requires USB API version 0x0116 or above!
+ * @param[out] freq_hz applied tone offset in Hz
+ * @return @ref HACKRF_SUCCESS on success or @ref hackrf_error variant
+ */
+extern ADDAPI int ADDCALL hackrf_get_rx_notch(hackrf_device* device, int64_t* const freq_hz);
 
 /** @} */ // defgroup pro_fpga
 
